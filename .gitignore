@@ -129,4 +129,5 @@ dmypy.json
 .pyre/
 
 # Garmin activity files
-.tcx
+*.tcx
+Activities/

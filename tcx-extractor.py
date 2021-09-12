@@ -1,11 +1,22 @@
 #%%
-from os import walk
 import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as dt
 import matplotlib.pyplot as plt
+from pathlib import Path
+
+def get_activities_list(folder_name):
+    '''
+    Get a list of garmin .tcx files from specified folder in current dir
+
+    Args: folder(str)
+    Returns: list(Path)
+    '''
+    dir = Path.cwd() / folder_name
+    return list(dir.glob('*.tcx'))
 
 def parse_garmin_tcx(filename):
+    #TODO: fix error when distance isn't the 3rd entry 
     """ Parses tcx activity file from Garmin Connect to Pandas DataFrame object
     Args: filename (str) - tcx file
 
@@ -60,9 +71,53 @@ def clean_garmin_tcx_data(data):
 
     return data
 
+def extract_running_intervals(data):
+    ''' 
+    Extract running intervals from cleaned tcx data
+
+    Args: data(pd.DataFrame) - data from clean_garmin_tcx_data() function
+    Returns: running_intervals(pd.DataFrame) 
+                columns=['start time', 'stop time', 'start dist', 'stop dist', 
+                            'duration, s', 'distance, m']
+    '''
+    # separate running from walking intervals
+    # calculate differences by data points
+    intervals = data.diff()
+    intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed', 'dpace']
+    intervals.drop(0, inplace=True)
+    intervals.drop(columns='dspeed', inplace=True)
+
+    # find start/stop indices based on cadence increase/decrease level
+    walkrun_cadence_threshold = 30
+    started_running = intervals[intervals['dcad'] > walkrun_cadence_threshold].index.values.tolist()
+    stopped_running = intervals[intervals['dcad'] < -walkrun_cadence_threshold].index.values.tolist()
+
+    # filter and save intervals data from dataset to separate dataframe
+    running_intervals = pd.DataFrame(columns=['start time', 'stop time', 'start dist', 
+                                            'stop dist'])
+    for start, stop in zip(started_running, stopped_running):
+        start_time = data.loc[start, 'time']
+        stop_time = data.loc[stop, 'time']
+        start_dist = data.loc[start, 'distance']
+        stop_dist = data.loc[stop, 'distance']
+        running_intervals = running_intervals.append(pd.Series({'start time': start_time, 
+                                                    'stop time': stop_time,'start dist': start_dist, 
+                                                    'stop dist': stop_dist}), ignore_index=True)
+
+    # calculate intervals duration and distance covered
+    running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
+    running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
+    # convert time from seconds to hh:mm:ss format
+    running_intervals.loc[:, 'start time'] = running_intervals.loc[:, 'start time'].apply(
+                                                lambda x: str(dt.timedelta(seconds=x)))
+    running_intervals.loc[:, 'stop time'] = running_intervals.loc[:, 'stop time'].apply(
+                                                lambda x: str(dt.timedelta(seconds=x)))
+
+    return running_intervals
+
 def plot_running_stats(data):
     '''
-    Plot pace, cadence, hr vs time from dataframe 
+    Plot pace, cadence, hr vs time from garmin tcx dataframe 
     '''
     plt.close('all')
     plt.figure()
@@ -80,57 +135,39 @@ def plot_running_stats(data):
     return
 
 #%%
-#load data
-id, data = parse_garmin_tcx('activity_garmin.tcx')
-data = clean_garmin_tcx_data(data)
-#plot_running_stats(data)
 
-
-#%%
-# separate running from walking intervals
-# calculate differences by data points
-intervals = data.diff()
-intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed', 'dpace']
-intervals.drop(0, inplace=True)
-intervals.drop(columns='dspeed', inplace=True)
-
-# find start/stop indices based on cadence increase/decrease level
-walkrun_cadence_threshold = 30
-started_running = intervals[intervals['dcad'] > walkrun_cadence_threshold].index.values.tolist()
-stopped_running = intervals[intervals['dcad'] < -walkrun_cadence_threshold].index.values.tolist()
-
-# filter and save intervals data from dataset to separate dataframe
-running_intervals = pd.DataFrame(columns=['start time', 'stop time', 'start dist', 
-                                        'stop dist'])
-for start, stop in zip(started_running, stopped_running):
-    start_time = data.loc[start, 'time']
-    stop_time = data.loc[stop, 'time']
-    start_dist = data.loc[start, 'distance']
-    stop_dist = data.loc[stop, 'distance']
-    running_intervals = running_intervals.append(pd.Series({'start time': start_time, 
-                                                'stop time': stop_time,'start dist': start_dist, 
-                                                'stop dist': stop_dist}), ignore_index=True)
-
-# calculate intervals duration and distance covered
-running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
-running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
-# convert time from seconds to hh:mm:ss format
-running_intervals.loc[:, 'start time'] = running_intervals.loc[:, 'start time'].apply(
-                                            lambda x: str(dt.timedelta(seconds=x)))
-running_intervals.loc[:, 'stop time'] = running_intervals.loc[:, 'stop time'].apply(
-                                            lambda x: str(dt.timedelta(seconds=x)))
-
-# running_intervals.plot(x='start time', y='distance')
-# running_intervals.plot(x='start time', y='duration')
+#running_intervals.plot(x='start time', y='duration')
 
 # calculate hr variability (increase/decrease rate)
-hrv_rate = intervals['dHR'] / intervals['dtime']
-hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
+# hrv_rate = intervals['dHR'] / intervals['dtime']
+# hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
 
 #%%
 
 def main():
-    pass
+    # get .tcx files
+    files = get_activities_list('Activities')
+
+    #%%
+    # prepare canvas
+    plt.close('all')
+    fig = plt.figure()
+    ax = plt.gca()
+
+    for file in files:
+        try:
+            #load data
+            id, data = parse_garmin_tcx(file)
+            data = clean_garmin_tcx_data(data)
+            #plot_running_stats(data)
+            running_intervals = extract_running_intervals(data)
+            running_intervals['distance'].plot.density(label=id[:10], ax=ax)         
+        except Exception as e:
+            print(str(file) + ' ' + str(e))
+
+    plt.legend()
+    plt.show()
+    return 1
 
 if __name__ == "__main__":
-    pass
+    main()
