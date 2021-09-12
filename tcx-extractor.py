@@ -1,4 +1,5 @@
 #%%
+import sys
 import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as dt
@@ -13,7 +14,10 @@ def get_activities_list(folder_name):
     Returns: list(Path)
     '''
     dir = Path.cwd() / folder_name
-    return list(dir.glob('*.tcx'))
+    files = list(dir.glob('*.tcx'))
+    activities_list = sorted(files, key=lambda path: int(path.stem.rsplit('_', 1)[1]))
+    
+    return activities_list
 
 def parse_garmin_tcx(filename):
     #TODO: fix error when distance isn't the 3rd entry 
@@ -143,16 +147,12 @@ def plot_running_stats(data):
 # hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
 
 #%%
-
-def main():
-    # get .tcx files
-    files = get_activities_list('Activities')
-
-    #%%
+def main(files): 
     # prepare canvas
     plt.close('all')
-    fig = plt.figure()
-    ax = plt.gca()
+    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
+    ax[0].title.set_text('Distance, m')
+    ax[1].title.set_text('Duration, s')
 
     for file in files:
         try:
@@ -161,13 +161,29 @@ def main():
             data = clean_garmin_tcx_data(data)
             #plot_running_stats(data)
             running_intervals = extract_running_intervals(data)
-            running_intervals['distance'].plot.density(label=id[:10], ax=ax)         
+            running_intervals['distance'].plot.density(label=id[:10], ax=ax[0])  
+            running_intervals['duration'].plot.density(label=id[:10], ax=ax[1])         
+       
         except Exception as e:
             print(str(file) + ' ' + str(e))
 
-    plt.legend()
+    ax[0].legend()
+    ax[1].legend()
     plt.show()
-    return 1
+    return 
 
 if __name__ == "__main__":
-    main()
+    # get .tcx files
+    files = get_activities_list('Activities')
+    
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'last2':
+            files = [files[-2], files[-1]]
+        elif sys.argv[1] == 'first-last':
+            files = [files[0], files[-1]]
+        elif sys.argv[1] == 'all':
+            files = files
+    else:
+        files = [files[-1]]
+
+    main(files)
