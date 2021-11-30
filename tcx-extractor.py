@@ -66,10 +66,13 @@ def clean_garmin_tcx_data(data):
     '''
     #fill missing speed/cadence data (previous not null value)
     data.loc[:,'cadence'].replace(0, method='ffill', inplace=True)
+    if data[data['cadence'] == 0] is not None:
+        data.loc[:,'cadence'].replace(0, method='bfill', inplace=True)
     data.loc[:,'speed'].replace(0, method='ffill', inplace=True)
+    if data[data['speed'] == 0] is not None:
+        data.loc[:,'speed'].replace(0, method='bfill', inplace=True)
 
-    #calculate pace [min/km]
-    data['pace'] = data['speed'].apply(lambda x: 1 / (x * 0.06))
+    # calculate and format time scale
     data.loc[:, 'time'] = data.loc[:, 'time'] - data.loc[0, 'time']
     data.loc[:, 'time'] = data.loc[:, 'time'].apply(lambda x: x.total_seconds())
 
@@ -86,28 +89,54 @@ def extract_running_intervals(data):
     '''
     # separate running from walking intervals
     # calculate differences by data points
-    intervals = data.diff()
-    intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed', 'dpace']
-    intervals.drop(0, inplace=True)
+    intervals = data.diff().dropna()
+    intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed']
     intervals.drop(columns='dspeed', inplace=True)
 
     # find start/stop indices based on cadence increase/decrease level
     walkrun_cadence_threshold = 30
+    max_walking_cadence = 125
+    # TODO filter by 3 points - sum dcad will be greater than 40, then filter if was already running/walking
+    # btw maybe filter is unnecessary because its unlikely that there'd be such increase in cadence on the run
+    # pass intervals df to filter function, doing moving window filtering
     started_running = intervals[intervals['dcad'] > walkrun_cadence_threshold].index.values.tolist()
     stopped_running = intervals[intervals['dcad'] < -walkrun_cadence_threshold].index.values.tolist()
 
+    # TODO: assert len(started) == len(stopped), intervals are consistent:
+    # start time < stop time
+    # when cadence falls from 200 to 160 (running), then to 120 program registers
+    # 2 instances of stopping running -> modify condition
+    for n, start in enumerate(started_running):
+        # filter cadence increase while running
+        if data.loc[start - 1, 'cadence'] > max_walking_cadence:
+            started_running.pop(n)
+        # filter cadence increase while walking too slow
+        elif data.loc[start, 'cadence'] < max_walking_cadence:
+            started_running.pop(n)
+    for n, stop in enumerate(stopped_running):
+        # filter cadence decrease while running
+        if data.loc[stop, 'cadence'] > max_walking_cadence:
+            stopped_running.pop(n)
+        # filter cadence decrease while walking
+        elif data.loc[stop - 1, 'cadence'] < max_walking_cadence:
+            stopped_running.pop(n)
+    print(f'{len(started_running)} start points\n{len(stopped_running)} stop points')
+    
     # filter and save intervals data from dataset to separate dataframe
     running_intervals = pd.DataFrame(columns=['start time', 'stop time', 'start dist', 
                                             'stop dist'])
+    
+    # TODO do only if len(start) = len(stop), else - clean 
     for start, stop in zip(started_running, stopped_running):
         start_time = data.loc[start, 'time']
-        stop_time = data.loc[stop, 'time']
         start_dist = data.loc[start, 'distance']
+        stop_time = data.loc[stop, 'time']
         stop_dist = data.loc[stop, 'distance']
+        
         running_intervals = running_intervals.append(pd.Series({'start time': start_time, 
                                                     'stop time': stop_time,'start dist': start_dist, 
                                                     'stop dist': stop_dist}), ignore_index=True)
-
+    
     # calculate intervals duration and distance covered
     running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
     running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
@@ -140,8 +169,6 @@ def plot_running_stats(data):
 
 #%%
 
-#running_intervals.plot(x='start time', y='duration')
-
 # calculate hr variability (increase/decrease rate)
 # hrv_rate = intervals['dHR'] / intervals['dtime']
 # hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
@@ -159,7 +186,6 @@ def main(files):
             #load data
             id, data = parse_garmin_tcx(file)
             data = clean_garmin_tcx_data(data)
-            #plot_running_stats(data)
             running_intervals = extract_running_intervals(data)
             running_intervals['distance'].plot.density(label=id[:10], ax=ax[0])  
             running_intervals['duration'].plot.density(label=id[:10], ax=ax[1])         
@@ -170,6 +196,7 @@ def main(files):
     ax[0].legend()
     ax[1].legend()
     plt.show()
+
     return 
 
 if __name__ == "__main__":
@@ -179,6 +206,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         if sys.argv[1] == 'last2':
             files = [files[-2], files[-1]]
+        elif sys.argv[1] == 'last3':
+            files = [files[-3], files[-2], files[-1]]
         elif sys.argv[1] == 'first-last':
             files = [files[0], files[-1]]
         elif sys.argv[1] == 'all':
