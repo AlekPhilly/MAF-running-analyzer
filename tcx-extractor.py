@@ -1,7 +1,7 @@
 #%%
 import sys
-import xml.etree.ElementTree as ET
-import pandas as pd
+from lxml import etree
+from pandas import DataFrame, Series, to_datetime
 import datetime as dt
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -28,33 +28,37 @@ def parse_garmin_tcx(filename):
     DF columns=['time'(datetime.time), 'distance, m'(float), 'HR'(int), 
     'cadence'(int), 'speed, m/s'(int)]
     """
-    tree = ET.parse(filename)
-    root = tree.getroot()
+    tree = etree.parse(str(filename))
 
-    # set namespaces for garmin xct file
-    ns = {
-        'ns0_training_center_db': 'http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2',
-        'ns3_activity_ext': 'http://www.garmin.com/xmlschemas/ActivityExtension/v2',
-    }
+    # set namespaces for garmin tcx file
+    ns = {'ns0': '{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}',
+    'ns3': '{http://www.garmin.com/xmlschemas/ActivityExtension/v2}'}
 
-    trackpoints = pd.DataFrame(columns=['time', 'distance', 'HR', 'cadence', 'speed'])
-    dist, hr, cad, speed = 0, 0, 0, 0
-    
-    # get data for all trackpoints
-    for trackpoint in root.iter('{' + ns['ns0_training_center_db'] + '}' +'Trackpoint'):
-        time = trackpoint[0].text
-        dist = float(trackpoint[3].text)
-        hr = int(trackpoint[4][0].text)
-        cad = int(trackpoint[5][0][1].text)*2
-        speed = float(trackpoint[5][0][0].text) 
-        trackpoints = trackpoints.append(pd.Series({'time': time, 'distance': dist, 
-                                                    'HR': hr, 'cadence': cad, 
-                                                    'speed': speed}), ignore_index=True)
+    id = tree.find('.//' + ns['ns0'] + 'Id').text
 
-    trackpoints.loc[:,'time'] = pd.to_datetime(trackpoints['time'])
-    id = [x.text for x in root.iter('{' + ns['ns0_training_center_db'] + '}' +'Id')][0]
+    trackpoints = tree.findall('.//' + ns['ns0'] + 'Trackpoint')
 
-    return (id, trackpoints)
+    data = DataFrame(columns='time,dist,lat,long,alt,hr,speed,cad'.split(','))    
+
+    for n, trackpoint in enumerate(trackpoints):
+        data.loc[n, 'time'] = trackpoint.find('.//' + ns['ns0'] + 'Time').text
+        data.loc[n, 'distance'] = float(trackpoint.find('.//' + ns['ns0'] + 'DistanceMeters').text)
+        data.loc[n, 'latitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LatitudeDegrees').text)
+        data.loc[n, 'longitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LongitudeDegrees').text)
+        data.loc[n, 'altitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'AltitudeMeters').text)
+        data.loc[n, 'HR'] = int(trackpoint.find('.//' + ns['ns0'] + 'HeartRateBpm/').text)
+        try:
+            data.loc[n, 'speed'] = float(trackpoint.find('.//' + ns['ns3'] + 'Speed').text)
+        except:
+            data.loc[n, 'speed'] = 0
+        try:
+            data.loc[n, 'cadence'] = int(trackpoint.find('.//' + ns['ns3'] + 'RunCadence').text) * 2
+        except:
+            data.loc[n, 'cadence'] = 0
+
+    data.loc[:,'time'] = to_datetime(data['time'])
+
+    return (id, data)
 
 def clean_garmin_tcx_data(data):
     '''
@@ -89,7 +93,7 @@ def extract_running_intervals(data):
     '''
     # separate running from walking intervals
     # calculate differences by data points
-    intervals = data.diff().dropna()
+    intervals = data[['time', 'distance', 'HR', 'cadence', 'speed']].diff().dropna()
     intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed']
     intervals.drop(columns='dspeed', inplace=True)
 
@@ -123,7 +127,7 @@ def extract_running_intervals(data):
     print(f'{len(started_running)} start points\n{len(stopped_running)} stop points')
     
     # filter and save intervals data from dataset to separate dataframe
-    running_intervals = pd.DataFrame(columns=['start time', 'stop time', 'start dist', 
+    running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
                                             'stop dist'])
     
     # TODO do only if len(start) = len(stop), else - clean 
@@ -133,7 +137,7 @@ def extract_running_intervals(data):
         stop_time = data.loc[stop, 'time']
         stop_dist = data.loc[stop, 'distance']
         
-        running_intervals = running_intervals.append(pd.Series({'start time': start_time, 
+        running_intervals = running_intervals.append(Series({'start time': start_time, 
                                                     'stop time': stop_time,'start dist': start_dist, 
                                                     'stop dist': stop_dist}), ignore_index=True)
     

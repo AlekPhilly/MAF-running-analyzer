@@ -131,3 +131,12 @@ dmypy.json
 # Garmin activity files
 *.tcx
 Activities/
+*.zip
+*.fit
+
+# exercise files
+running_stats.ipynb
+tcx-parser.py
+
+# vscode
+*.json
