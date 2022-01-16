@@ -94,41 +94,19 @@ def extract_running_intervals(data):
                 columns=['start time', 'stop time', 'start dist', 'stop dist', 
                             'duration, s', 'distance, m']
     '''
+    walk_cadence = 130
     # separate running from walking intervals
-    # calculate differences by data points
-    intervals = data[['time', 'distance', 'HR', 'cadence', 'speed']].diff().dropna()
-    intervals.columns = ['dtime', 'ddist', 'dHR', 'dcad', 'dspeed']
-    intervals.drop(columns='dspeed', inplace=True)
-
-    # find start/stop indices based on cadence increase/decrease level
-    walkrun_cadence_threshold = 30
-    max_walking_cadence = 125
-    # TODO filter by 3 points - sum dcad will be greater than 40, then filter if was already running/walking
-    # btw maybe filter is unnecessary because its unlikely that there'd be such increase in cadence on the run
-    # pass intervals df to filter function, doing moving window filtering
-    started_running = intervals[intervals['dcad'] > walkrun_cadence_threshold].index.values.tolist()
-    stopped_running = intervals[intervals['dcad'] < -walkrun_cadence_threshold].index.values.tolist()
-
-    # TODO: assert len(started) == len(stopped), intervals are consistent:
-    # start time < stop time
-    # when cadence falls from 200 to 160 (running), then to 120 program registers
-    # 2 instances of stopping running -> modify condition
-    for n, start in enumerate(started_running):
-        # filter cadence increase while running
-        if data.loc[start - 1, 'cadence'] > max_walking_cadence:
-            started_running.pop(n)
-        # filter cadence increase while walking too slow
-        elif data.loc[start, 'cadence'] < max_walking_cadence:
-            started_running.pop(n)
-    for n, stop in enumerate(stopped_running):
-        # filter cadence decrease while running
-        if data.loc[stop, 'cadence'] > max_walking_cadence:
-            stopped_running.pop(n)
-        # filter cadence decrease while walking
-        elif data.loc[stop - 1, 'cadence'] < max_walking_cadence:
-            stopped_running.pop(n)
-    print(f'{len(started_running)} start points\n{len(stopped_running)} stop points')
+    started_running, stopped_running = [], []
+    for n in range(1, len(data.index)):
+        if data.loc[n, 'cadence'] > walk_cadence and data.loc[n - 1, 'cadence'] <= walk_cadence:
+            started_running.append(n)
+        if data.loc[n, 'cadence'] <= walk_cadence and data.loc[n - 1, 'cadence'] > walk_cadence:
+            stopped_running.append(n)
     
+    if len(started_running) != len(stopped_running):
+        print(f'{len(started_running)} start points\n{len(stopped_running)} stop points')
+        raise ValueError("Quanties of start and stop points aren't equal")
+
     # filter and save intervals data from dataset to separate dataframe
     running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
                                             'stop dist'])
@@ -215,6 +193,12 @@ if __name__ == "__main__":
             files = [files[-2], files[-1]]
         elif sys.argv[1] == 'last3':
             files = [files[-3], files[-2], files[-1]]
+        elif 'last-' in sys.argv[1]:
+            to_read = []
+            num = int(sys.argv[1].split('-')[1])
+            for i in range(1, num + 1):
+                to_read.append(files[-i])
+            files = to_read
         elif sys.argv[1] == 'first-last':
             files = [files[0], files[-1]]
         elif sys.argv[1] == 'all':
