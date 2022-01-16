@@ -135,8 +135,9 @@ Activities/
 *.fit
 
 # exercise files
-running_stats.ipynb
+*.ipynb
 tcx-parser.py
+parser_tests.py
 
 # vscode
 *.json

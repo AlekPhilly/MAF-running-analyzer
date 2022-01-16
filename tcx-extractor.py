@@ -5,6 +5,8 @@ from pandas import DataFrame, Series, to_datetime
 import datetime as dt
 import matplotlib.pyplot as plt
 from pathlib import Path
+from numpy import nan
+
 
 def get_activities_list(folder_name):
     '''
@@ -20,7 +22,6 @@ def get_activities_list(folder_name):
     return activities_list
 
 def parse_garmin_tcx(filename):
-    #TODO: fix error when distance isn't the 3rd entry 
     """ Parses tcx activity file from Garmin Connect to Pandas DataFrame object
     Args: filename (str) - tcx file
 
@@ -34,27 +35,33 @@ def parse_garmin_tcx(filename):
     ns = {'ns0': '{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}',
     'ns3': '{http://www.garmin.com/xmlschemas/ActivityExtension/v2}'}
 
-    id = tree.find('.//' + ns['ns0'] + 'Id').text
+    id = to_datetime(tree.find('.//' + ns['ns0'] + 'Id').text).date()
 
     trackpoints = tree.findall('.//' + ns['ns0'] + 'Trackpoint')
 
-    data = DataFrame(columns='time,dist,lat,long,alt,hr,speed,cad'.split(','))    
+    data = DataFrame(columns='time,distance,HR,speed,cadence,latitude,longitude,altitude'.split(','))    
 
     for n, trackpoint in enumerate(trackpoints):
         data.loc[n, 'time'] = trackpoint.find('.//' + ns['ns0'] + 'Time').text
         data.loc[n, 'distance'] = float(trackpoint.find('.//' + ns['ns0'] + 'DistanceMeters').text)
-        data.loc[n, 'latitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LatitudeDegrees').text)
-        data.loc[n, 'longitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LongitudeDegrees').text)
         data.loc[n, 'altitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'AltitudeMeters').text)
         data.loc[n, 'HR'] = int(trackpoint.find('.//' + ns['ns0'] + 'HeartRateBpm/').text)
         try:
+            data.loc[n, 'latitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LatitudeDegrees').text)
+        except:
+            data.loc[n, 'latitude'] = nan
+        try:
+            data.loc[n, 'longitude'] = float(trackpoint.find('.//' + ns['ns0'] + 'LongitudeDegrees').text)
+        except:
+            data.loc[n, 'longitude'] = nan
+        try:
             data.loc[n, 'speed'] = float(trackpoint.find('.//' + ns['ns3'] + 'Speed').text)
         except:
-            data.loc[n, 'speed'] = 0
+            data.loc[n, 'speed'] = nan
         try:
             data.loc[n, 'cadence'] = int(trackpoint.find('.//' + ns['ns3'] + 'RunCadence').text) * 2
         except:
-            data.loc[n, 'cadence'] = 0
+            data.loc[n, 'cadence'] = nan
 
     data.loc[:,'time'] = to_datetime(data['time'])
 
@@ -68,13 +75,9 @@ def clean_garmin_tcx_data(data):
     Args: data(pd.DataFrame) - data from parse_garmin_tcx() function
     Returns: data(pd.DataFrame)
     '''
-    #fill missing speed/cadence data (previous not null value)
-    data.loc[:,'cadence'].replace(0, method='ffill', inplace=True)
-    if data[data['cadence'] == 0] is not None:
-        data.loc[:,'cadence'].replace(0, method='bfill', inplace=True)
-    data.loc[:,'speed'].replace(0, method='ffill', inplace=True)
-    if data[data['speed'] == 0] is not None:
-        data.loc[:,'speed'].replace(0, method='bfill', inplace=True)
+    #fill not recorded or missing data (previous not null value)
+    data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']] = data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']].replace(0, method='ffill')
+    data.fillna(method='ffill', inplace=True)
 
     # calculate and format time scale
     data.loc[:, 'time'] = data.loc[:, 'time'] - data.loc[0, 'time']
@@ -191,8 +194,8 @@ def main(files):
             id, data = parse_garmin_tcx(file)
             data = clean_garmin_tcx_data(data)
             running_intervals = extract_running_intervals(data)
-            running_intervals['distance'].plot.density(label=id[:10], ax=ax[0])  
-            running_intervals['duration'].plot.density(label=id[:10], ax=ax[1])         
+            running_intervals['distance'].plot.density(label=id, ax=ax[0])  
+            running_intervals['duration'].plot.density(label=id, ax=ax[1])         
        
         except Exception as e:
             print(str(file) + ' ' + str(e))
