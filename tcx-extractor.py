@@ -94,7 +94,11 @@ def extract_running_intervals(data):
                 columns=['start time', 'stop time', 'start dist', 'stop dist', 
                             'duration, s', 'distance, m']
     '''
-    walk_cadence = 130
+    # calculate walking cadence (avg cadence for brisk walk = 100)
+    cadence = sorted([x for x in data['cadence'].values if x > 80])
+    avg_cadence = round((min(cadence) + max(cadence)) / 2, 0)
+    walk_cadence = min([x for x in cadence if x < avg_cadence], key = lambda x: avg_cadence - x)
+
     # separate running from walking intervals
     started_running, stopped_running = [], []
     for n in range(1, len(data.index)):
@@ -204,6 +208,7 @@ if __name__ == "__main__":
         elif sys.argv[1] == 'all':
             files = files
     else:
-        files = [files[-1]]
+        files = ['/home/alek/Scripts/MAF-running-analyzer/Activities/activity_7853225645.tcx']
+        # files = [files[-1]]
 
     main(files)
