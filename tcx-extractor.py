@@ -1,4 +1,3 @@
-#%%
 import sys
 from lxml import etree
 from pandas import DataFrame, Series, to_datetime
@@ -6,6 +5,7 @@ import datetime as dt
 import matplotlib.pyplot as plt
 from pathlib import Path
 from numpy import nan
+import seaborn as sns
 
 
 def get_activities_list(folder_name):
@@ -115,7 +115,6 @@ def extract_running_intervals(data):
     running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
                                             'stop dist'])
     
-    # TODO do only if len(start) = len(stop), else - clean 
     for start, stop in zip(started_running, stopped_running):
         start_time = data.loc[start, 'time']
         start_dist = data.loc[start, 'distance']
@@ -137,34 +136,8 @@ def extract_running_intervals(data):
 
     return running_intervals
 
-def plot_running_stats(data):
-    '''
-    Plot pace, cadence, hr vs time from garmin tcx dataframe 
-    '''
-    plt.close('all')
-    plt.figure()
-    data.plot(x='time', y='pace')
-    plt.gca().invert_yaxis()
-    plt.show()
-
-    plt.figure()
-    data.plot(x='time', y='cadence')
-    plt.show()
-
-    plt.figure()
-    data.plot(x='time', y='HR')
-    plt.show()
-    return
-
-#%%
-
-# calculate hr variability (increase/decrease rate)
-# hrv_rate = intervals['dHR'] / intervals['dtime']
-# hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
-
-#%%
-def main(files): 
-    # prepare canvas
+def plot_density(files):
+   # prepare canvas
     plt.close('all')
     fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
     ax[0].title.set_text('Distance, m')
@@ -188,6 +161,44 @@ def main(files):
 
     return 
 
+def plot_box(files):
+    activities = DataFrame()
+    for file in files:
+        id, data = parse_garmin_tcx(file)
+        data = clean_garmin_tcx_data(data)
+        running_intervals = extract_running_intervals(data)
+        running_intervals['id'] = id
+        activities = activities.append(running_intervals, ignore_index=True)
+
+    plt.close('all')
+    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
+    fig.autofmt_xdate()
+    ax[0].title.set_text('Distance, m')
+    ax[1].title.set_text('Duration, s')
+
+    sns.boxplot(x='id', y='duration', data=activities, ax=ax[1])
+    sns.boxplot(x='id', y='distance', data=activities, ax=ax[0])
+    plt.show()
+
+    return
+
+#%%
+
+# calculate hr variability (increase/decrease rate)
+# hrv_rate = intervals['dHR'] / intervals['dtime']
+# hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
+
+def main(files, mode='box'): 
+    if mode == 'kde':
+        plot_density(files)
+    elif mode == 'box':
+        plot_box(files)
+    else:
+        raise ValueError('Unknown mode')
+
+    return
+
+
 if __name__ == "__main__":
     # get .tcx files
     files = get_activities_list('Activities')
@@ -200,15 +211,19 @@ if __name__ == "__main__":
         elif 'last-' in sys.argv[1]:
             to_read = []
             num = int(sys.argv[1].split('-')[1])
-            for i in range(1, num + 1):
+            for i in range(num, 0, -1):
                 to_read.append(files[-i])
             files = to_read
         elif sys.argv[1] == 'first-last':
             files = [files[0], files[-1]]
         elif sys.argv[1] == 'all':
-            files = files
+            pass
     else:
-        files = ['/home/alek/Scripts/MAF-running-analyzer/Activities/activity_7853225645.tcx']
-        # files = [files[-1]]
+        files = [files[-1]]
 
-    main(files)
+    if len(sys.argv) == 3:
+        mode = sys.argv[2]
+    else:
+        mode = 'box'
+
+    main(files, mode)
