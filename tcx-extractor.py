@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from numpy import nan
 import seaborn as sns
+from time import perf_counter
 
 
 def get_activities_list(folder_name):
@@ -79,6 +80,8 @@ def clean_garmin_tcx_data(data):
     data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']] = data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']].replace(0, method='ffill')
     data.fillna(method='ffill', inplace=True)
 
+    data.loc[:, 'pace'] = round(1 / (0.06 * data.loc[:, 'speed']), 2)
+
     # calculate and format time scale
     data.loc[:, 'time'] = data.loc[:, 'time'] - data.loc[0, 'time']
     data.loc[:, 'time'] = data.loc[:, 'time'].apply(lambda x: x.total_seconds())
@@ -101,15 +104,22 @@ def extract_running_intervals(data):
 
     # separate running from walking intervals
     started_running, stopped_running = [], []
+    started_walking, stopped_walking = [0], []
     for n in range(1, len(data.index)):
         if data.loc[n, 'cadence'] > walk_cadence and data.loc[n - 1, 'cadence'] <= walk_cadence:
             started_running.append(n)
+            stopped_walking.append(n)
         if data.loc[n, 'cadence'] <= walk_cadence and data.loc[n - 1, 'cadence'] > walk_cadence:
             stopped_running.append(n)
-    
+            started_walking.append(n)
+    stopped_walking.append(data.index[-1])
+
     if len(started_running) != len(stopped_running):
         print(f'{len(started_running)} start points\n{len(stopped_running)} stop points')
-        raise ValueError("Quanties of start and stop points aren't equal")
+        raise ValueError("Quanties of start and stop points aren't equal (running)")
+    if len(started_running) != len(stopped_running):
+        print(f'{len(started_walking)} start points\n{len(stopped_walking)} stop points')
+        raise ValueError("Quanties of start and stop points aren't equal (walking)")
 
     # filter and save intervals data from dataset to separate dataframe
     running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
@@ -120,24 +130,42 @@ def extract_running_intervals(data):
         start_dist = data.loc[start, 'distance']
         stop_time = data.loc[stop, 'time']
         stop_dist = data.loc[stop, 'distance']
+        dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
         
         running_intervals = running_intervals.append(Series({'start time': start_time, 
                                                     'stop time': stop_time,'start dist': start_dist, 
-                                                    'stop dist': stop_dist}), ignore_index=True)
+                                                    'stop dist': stop_dist, 'dHR': dHR,
+                                                    'type': 'run'}), ignore_index=True)
+    
+    for start, stop in zip(started_walking, stopped_walking):
+        start_time = data.loc[start, 'time']
+        start_dist = data.loc[start, 'distance']
+        stop_time = data.loc[stop, 'time']
+        stop_dist = data.loc[stop, 'distance']
+        dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
+        
+        running_intervals = running_intervals.append(Series({'start time': start_time, 
+                                                    'stop time': stop_time,'start dist': start_dist, 
+                                                    'stop dist': stop_dist, 'dHR': dHR,
+                                                    'type': 'walk'}), ignore_index=True)
     
     # calculate intervals duration and distance covered
     running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
     running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
+
+    running_intervals['HRrate'] = abs(running_intervals['dHR'] / running_intervals['duration'] * 60)
+
     # convert time from seconds to hh:mm:ss format
-    running_intervals.loc[:, 'start time'] = running_intervals.loc[:, 'start time'].apply(
-                                                lambda x: str(dt.timedelta(seconds=x)))
-    running_intervals.loc[:, 'stop time'] = running_intervals.loc[:, 'stop time'].apply(
-                                                lambda x: str(dt.timedelta(seconds=x)))
+    # running_intervals.loc[:, 'start time'] = running_intervals.loc[:, 'start time'].apply(
+    #                                             lambda x: str(dt.timedelta(seconds=x)))
+    # running_intervals.loc[:, 'stop time'] = running_intervals.loc[:, 'stop time'].apply(
+    #                                             lambda x: str(dt.timedelta(seconds=x)))
 
     return running_intervals
 
 def plot_density(files):
    # prepare canvas
+    den_cnt = perf_counter()
     plt.close('all')
     fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
     ax[0].title.set_text('Distance, m')
@@ -146,9 +174,19 @@ def plot_density(files):
     for file in files:
         try:
             #load data
+            counter = perf_counter()
             id, data = parse_garmin_tcx(file)
+            counter = perf_counter() - counter
+            print(f'parsing took {counter} s')
+            counter = perf_counter()
             data = clean_garmin_tcx_data(data)
+            counter = perf_counter() - counter
+            print(f'cleaning took {counter} s')
+            counter = perf_counter()
             running_intervals = extract_running_intervals(data)
+            counter = perf_counter() - counter
+            print(f'extracting took {counter} s')
+
             running_intervals['distance'].plot.density(label=id, ax=ax[0])  
             running_intervals['duration'].plot.density(label=id, ax=ax[1])         
        
@@ -157,12 +195,16 @@ def plot_density(files):
 
     ax[0].legend()
     ax[1].legend()
+    den_cnt = perf_counter() - den_cnt
+    print(f'running took {den_cnt} s')
     plt.show()
 
     return 
 
 def plot_box(files):
+    counter = perf_counter()
     activities = DataFrame()
+    summary = []
     for file in files:
         id, data = parse_garmin_tcx(file)
         data = clean_garmin_tcx_data(data)
@@ -170,14 +212,39 @@ def plot_box(files):
         running_intervals['id'] = id
         activities = activities.append(running_intervals, ignore_index=True)
 
-    plt.close('all')
-    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
-    fig.autofmt_xdate()
-    ax[0].title.set_text('Distance, m')
-    ax[1].title.set_text('Duration, s')
+        run_duration = running_intervals[running_intervals['type'] == 'run']['duration'].sum()
+        walk_duration = running_intervals[running_intervals['type'] == 'walk']['duration'].sum()
+        run_pct = round(run_duration / (run_duration + walk_duration) * 100, 1)
+        activity_stats = {'date': id, 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
+                            'distance': round(data['distance'].values[-1] / 1000, 1), 
+                            'pace': round(data['pace'].mean(), 1),
+                            'avg hr': round(data['HR'].mean()),
+                            'run pct': run_pct}
+        summary.append(activity_stats)
+    summary = DataFrame.from_dict(summary)
 
-    sns.boxplot(x='id', y='duration', data=activities, ax=ax[1])
-    sns.boxplot(x='id', y='distance', data=activities, ax=ax[0])
+    counter = perf_counter() - counter
+    print(f'preparing data took {counter:.3f} s')
+
+    counter = perf_counter()
+    plt.close('all')
+    fig, ax  = plt.subplots(nrows=2, ncols=2, figsize=(10, 5))
+    fig.autofmt_xdate()
+    ax[0, 0].title.set_text('Distance, m')
+    ax[0, 1].title.set_text('Duration, s')
+    ax[1, 0].title.set_text('HR variation rate, beats/min')
+    ax[1, 1].title.set_text('Summary')
+
+    sns.boxplot(x='id', y='distance', data=activities, hue='type', ax=ax[0, 0])
+    sns.boxplot(x='id', y='duration', data=activities, hue='type', ax=ax[0, 1])
+    sns.boxplot(x='id', y='HRrate', data=activities, hue='type', ax=ax[1, 0])
+    
+    cellText = [text for _, text in summary.iterrows()] 
+    ax[1, 1].axis('off')
+    ax[1, 1].table(cellText=cellText, colLabels=summary.columns, 
+                    cellLoc='center', loc='best')
+    counter = perf_counter() - counter
+    print(f'plotting took {counter:.3f} s')
     plt.show()
 
     return
