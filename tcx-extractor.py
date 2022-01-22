@@ -108,9 +108,9 @@ def extract_running_intervals(data):
     for n in range(1, len(data.index)):
         if data.loc[n, 'cadence'] > walk_cadence and data.loc[n - 1, 'cadence'] <= walk_cadence:
             started_running.append(n)
-            stopped_walking.append(n)
+            stopped_walking.append(n - 1)
         if data.loc[n, 'cadence'] <= walk_cadence and data.loc[n - 1, 'cadence'] > walk_cadence:
-            stopped_running.append(n)
+            stopped_running.append(n - 1)
             started_walking.append(n)
     stopped_walking.append(data.index[-1])
 
@@ -230,19 +230,29 @@ def plot_box(files):
     plt.close('all')
     fig, ax  = plt.subplots(nrows=2, ncols=2, figsize=(10, 5))
     fig.autofmt_xdate()
-    ax[0, 0].title.set_text('Distance, m')
-    ax[0, 1].title.set_text('Duration, s')
-    ax[1, 0].title.set_text('HR variation rate, beats/min')
-    ax[1, 1].title.set_text('Summary')
+    # ax[0, 0].title.set_text('Distance, m')
+    # ax[0, 1].title.set_text('Duration, s')
+    # ax[1, 0].title.set_text('HR var rate, bpm')
+    # ax[1, 1].title.set_text('Summary')
 
-    sns.boxplot(x='id', y='distance', data=activities, hue='type', ax=ax[0, 0])
-    sns.boxplot(x='id', y='duration', data=activities, hue='type', ax=ax[0, 1])
-    sns.boxplot(x='id', y='HRrate', data=activities, hue='type', ax=ax[1, 0])
+    dist_plot = sns.boxplot(x='id', y='distance', data=activities, hue='type', 
+                showfliers=False, ax=ax[0, 0])
+    duration_plot = sns.boxplot(x='id', y='duration', data=activities, hue='type', 
+                showfliers=False, ax=ax[0, 1])
+    hr_plot = sns.violinplot(x='id', y='HRrate', data=activities, hue='type', 
+                showfliers=False, split=True, ax=ax[1, 0])
+    for plot in [dist_plot, duration_plot, hr_plot]:
+        plot.set_xlabel(None)
+        plot.grid(axis='y', alpha=0.5)
+    ax[0, 1].get_legend().remove()
+    ax[1, 0].get_legend().remove()
     
     cellText = [text for _, text in summary.iterrows()] 
     ax[1, 1].axis('off')
-    ax[1, 1].table(cellText=cellText, colLabels=summary.columns, 
+    table = ax[1, 1].table(cellText=cellText, colLabels=summary.columns, 
                     cellLoc='center', loc='best')
+    # table.auto_set_font_size(False)
+    # table.set_fontsize(6)
     counter = perf_counter() - counter
     print(f'plotting took {counter:.3f} s')
     plt.show()
