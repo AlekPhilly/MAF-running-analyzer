@@ -260,11 +260,6 @@ def plot_box(files):
     return
 
 #%%
-
-# calculate hr variability (increase/decrease rate)
-# hrv_rate = intervals['dHR'] / intervals['dtime']
-# hr_time = data.iloc[:-1]['time'] + (intervals['dtime'].reset_index(drop=True) / 2)
-
 def main(files, mode='box'): 
     if mode == 'kde':
         plot_density(files)
