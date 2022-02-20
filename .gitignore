@@ -139,5 +139,8 @@ Activities/
 tcx-parser.py
 parser_tests.py
 
+# database password
+db_credentials.txt
+
 # vscode
 *.json

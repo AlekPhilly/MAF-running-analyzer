@@ -4,9 +4,10 @@ from pandas import DataFrame, Series, to_datetime
 import datetime as dt
 import matplotlib.pyplot as plt
 from pathlib import Path
-from numpy import nan
+from numpy import nan, inf
 import seaborn as sns
 from time import perf_counter
+from db_interaction import init_db, add_activity_id, add_data, truncate_db, drop_all, processed_files
 
 
 def get_activities_list(folder_name):
@@ -36,7 +37,7 @@ def parse_garmin_tcx(filename):
     ns = {'ns0': '{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}',
     'ns3': '{http://www.garmin.com/xmlschemas/ActivityExtension/v2}'}
 
-    id = to_datetime(tree.find('.//' + ns['ns0'] + 'Id').text).date()
+    id = to_datetime(tree.find('.//' + ns['ns0'] + 'Id').text)
 
     trackpoints = tree.findall('.//' + ns['ns0'] + 'Trackpoint')
 
@@ -76,7 +77,7 @@ def clean_garmin_tcx_data(data):
     Args: data(pd.DataFrame) - data from parse_garmin_tcx() function
     Returns: data(pd.DataFrame)
     '''
-    #fill not recorded or missing data (previous not null value)
+    # fill not recorded or missing data (previous not null value)
     data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']] = data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']].replace(0, method='ffill')
     data.fillna(method='ffill', inplace=True)
 
@@ -122,8 +123,8 @@ def extract_running_intervals(data):
         raise ValueError("Quanties of start and stop points aren't equal (walking)")
 
     # filter and save intervals data from dataset to separate dataframe
-    running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
-                                            'stop dist'])
+    running_intervals = DataFrame(columns=['start_time', 'stop_time', 'start_dist', 
+                                            'stop_dist'])
     
     for start, stop in zip(started_running, stopped_running):
         start_time = data.loc[start, 'time']
@@ -132,9 +133,9 @@ def extract_running_intervals(data):
         stop_dist = data.loc[stop, 'distance']
         dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
         
-        running_intervals = running_intervals.append(Series({'start time': start_time, 
-                                                    'stop time': stop_time,'start dist': start_dist, 
-                                                    'stop dist': stop_dist, 'dHR': dHR,
+        running_intervals = running_intervals.append(Series({'start_time': start_time, 
+                                                    'stop_time': stop_time,'start_dist': start_dist, 
+                                                    'stop_dist': stop_dist, 'dHR': dHR,
                                                     'type': 'run'}), ignore_index=True)
     
     for start, stop in zip(started_walking, stopped_walking):
@@ -144,14 +145,14 @@ def extract_running_intervals(data):
         stop_dist = data.loc[stop, 'distance']
         dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
         
-        running_intervals = running_intervals.append(Series({'start time': start_time, 
-                                                    'stop time': stop_time,'start dist': start_dist, 
-                                                    'stop dist': stop_dist, 'dHR': dHR,
+        running_intervals = running_intervals.append(Series({'start_time': start_time, 
+                                                    'stop_time': stop_time,'start_dist': start_dist, 
+                                                    'stop_dist': stop_dist, 'dHR': dHR,
                                                     'type': 'walk'}), ignore_index=True)
     
     # calculate intervals duration and distance covered
-    running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
-    running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
+    running_intervals['duration'] = running_intervals['stop_time'] - running_intervals['start_time']
+    running_intervals['distance'] = running_intervals['stop_dist'] - running_intervals['start_dist']
 
     running_intervals['HRrate'] = abs(running_intervals['dHR'] / running_intervals['duration'] * 60)
 
@@ -162,6 +163,53 @@ def extract_running_intervals(data):
     #                                             lambda x: str(dt.timedelta(seconds=x)))
 
     return running_intervals
+
+
+def update_db(db_name, username, password, activities_dir):
+    
+    activities = get_activities_list(activities_dir)
+    processed_activities = processed_files(db_name, username, password)
+
+    for activity in activities:
+
+        if activity.name in processed_activities:
+            print('Entry already exists')
+            continue
+        
+        try:
+            id, data = parse_garmin_tcx(activity)
+            data = clean_garmin_tcx_data(data)
+            intervals = extract_running_intervals(data)
+        except:
+            continue
+
+        intervals['act_id'] = id
+        data['act_id'] = id
+        data.columns = [x.lower() for x in data.columns]
+        intervals.columns = [x.lower() for x in intervals.columns]
+
+        run_duration = intervals[intervals['type'] == 'run']['duration'].sum()
+        walk_duration = intervals[intervals['type'] == 'walk']['duration'].sum()
+        run_pct = round(run_duration / (run_duration + walk_duration) * 100, 1)
+
+        activity_stats = {'act_id': id, 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
+                        'distance': round(data['distance'].values[-1] / 1000, 1), 
+                        'pace': round(data[data['pace'] != inf]['pace'].mean(), 1),
+                        'avg_hr': round(data['hr'].mean()),
+                        'run_pct': run_pct}
+        summary = DataFrame([activity_stats])
+
+        try:
+            add_activity_id(db_name, username, password, id, activity.name)
+        except:
+            print('Entry already exists')
+            continue
+
+        for table, dta in zip(('trackpoints', 'intervals', 'summary'), 
+                                (data, intervals, summary)):
+            add_data(db_name, username, password, table, dta)
+
+    return
 
 def plot_density(files):
    # prepare canvas
@@ -215,7 +263,7 @@ def plot_box(files):
         run_duration = running_intervals[running_intervals['type'] == 'run']['duration'].sum()
         walk_duration = running_intervals[running_intervals['type'] == 'walk']['duration'].sum()
         run_pct = round(run_duration / (run_duration + walk_duration) * 100, 1)
-        activity_stats = {'date': id, 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
+        activity_stats = {'date': id.date(), 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
                             'distance': round(data['distance'].values[-1] / 1000, 1), 
                             'pace': round(data['pace'].mean(), 1),
                             'avg hr': round(data['HR'].mean()),
