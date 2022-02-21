@@ -1,9 +1,18 @@
 import psycopg2 as pg2
 from sqlalchemy import create_engine
+from pandas import read_sql
 
 
 
 def init_db(db_name, username, password):
+    ''' Initialize empty postgresql database with 3 tables:
+        activities - contains all processed activities
+        trackpoints - contains raw data from garmin tcx (only pace column is added)
+        intervals - contains data for running/walking intervals
+        summary - contains summary for activity
+
+        Parameters: db_name (str), username (str), password (str)
+    '''
 
     con = pg2.connect(database=db_name, user=username, 
                         password=password)
@@ -133,9 +142,68 @@ def processed_files(db_name, username, password):
                         password=password)
     cur = con.cursor()
     
-    cur.execute('SELECT filename FROM activities')
+    cur.execute('SELECT filename FROM activities ORDER BY act_id')
     files = [x[0] for x in cur.fetchall()]
 
     con.close()
 
     return files
+
+
+def fetchone(db_name, username, password, filename: str):
+
+    engine_name = f'postgresql+psycopg2://{username}:{password}@localhost:5432/{db_name}'
+    engine = create_engine(engine_name)
+
+    trackpoints = read_sql(f"""SELECT a.act_id, time, distance, hr, cadence, latitude, 
+                                    longitude, altitude, pace
+                                FROM trackpoints AS t
+                                INNER JOIN activities AS a
+                                ON t.act_id = a.act_id
+                                WHERE filename = '{filename}'
+                                """, con=engine)
+    intervals = read_sql(f"""SELECT a.act_id, start_time, stop_time, start_dist, 
+                                stop_dist, dhr, type, duration, distance, hrrate
+                                FROM intervals AS i
+                                INNER JOIN activities AS a
+                                ON a.act_id = i.act_id
+                                WHERE filename = '{filename}'
+                                """, con=engine)
+    summary = read_sql(f"""SELECT a.act_id, duration, distance, pace, avg_hr, run_pct
+                            FROM summary AS s
+                            INNER JOIN activities AS a
+                            ON a.act_id = s.act_id
+                            WHERE filename = '{filename}'
+                            """, con=engine)
+
+    return trackpoints, intervals, summary
+
+
+def fetchmany(db_name, username, password, filenames: tuple):
+
+    engine_name = f'postgresql+psycopg2://{username}:{password}@localhost:5432/{db_name}'
+    engine = create_engine(engine_name)
+
+    trackpoints = read_sql(f"""SELECT a.act_id, time, distance, hr, cadence, latitude, 
+                                    longitude, altitude, pace
+                                FROM trackpoints AS t
+                                INNER JOIN activities AS a
+                                ON t.act_id = a.act_id
+                                WHERE filename IN {filenames}
+                                """, con=engine)
+    intervals = read_sql(f"""SELECT a.act_id, start_time, stop_time, start_dist, 
+                            stop_dist, dhr, type, duration, distance, hrrate
+                            FROM intervals AS i
+                            INNER JOIN activities AS a
+                            ON a.act_id = i.act_id
+                            WHERE filename IN {filenames}
+                            """, con=engine)
+    summary = read_sql(f"""SELECT a.act_id, duration, distance, pace, avg_hr, run_pct
+                            FROM summary AS s
+                            INNER JOIN activities AS a
+                            ON a.act_id = s.act_id
+                            WHERE filename IN {filenames}
+                            """, con=engine)
+
+
+    return trackpoints, intervals, summary
