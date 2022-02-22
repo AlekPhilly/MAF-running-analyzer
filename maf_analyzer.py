@@ -7,8 +7,9 @@ from pathlib import Path
 from numpy import nan, inf
 import seaborn as sns
 from time import perf_counter
-from db_interaction import init_db, add_activity_id, add_data, truncate_db, drop_all, processed_files
-
+from db_interaction import init_db, add_activity_id, add_data
+from db_interaction import truncate_db, drop_all, processed_files
+from db_interaction import fetchone, fetchmany, processed_activities
 
 def get_activities_list(folder_name):
     '''
@@ -211,65 +212,30 @@ def update_db(db_name, username, password, activities_dir):
 
     return
 
-def plot_density(files):
-   # prepare canvas
-    den_cnt = perf_counter()
-    plt.close('all')
-    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
-    ax[0].title.set_text('Distance, m')
-    ax[1].title.set_text('Duration, s')
 
-    for file in files:
-        try:
-            #load data
-            counter = perf_counter()
-            id, data = parse_garmin_tcx(file)
-            counter = perf_counter() - counter
-            print(f'parsing took {counter} s')
-            counter = perf_counter()
-            data = clean_garmin_tcx_data(data)
-            counter = perf_counter() - counter
-            print(f'cleaning took {counter} s')
-            counter = perf_counter()
-            running_intervals = extract_running_intervals(data)
-            counter = perf_counter() - counter
-            print(f'extracting took {counter} s')
-
-            running_intervals['distance'].plot.density(label=id, ax=ax[0])  
-            running_intervals['duration'].plot.density(label=id, ax=ax[1])         
-       
-        except Exception as e:
-            print(str(file) + ' ' + str(e))
-
-    ax[0].legend()
-    ax[1].legend()
-    den_cnt = perf_counter() - den_cnt
-    print(f'running took {den_cnt} s')
-    plt.show()
-
-    return 
-
-def plot_box(files):
+def plot_box(quantity):
     counter = perf_counter()
-    activities = DataFrame()
-    summary = []
-    for file in files:
-        id, data = parse_garmin_tcx(file)
-        data = clean_garmin_tcx_data(data)
-        running_intervals = extract_running_intervals(data)
-        running_intervals['id'] = id
-        activities = activities.append(running_intervals, ignore_index=True)
+    
+    db_name, username, password = Path('db_credentials.txt').read_text().splitlines()
+    
+    files_indb = set(processed_files(db_name, username, password))
+    files_indir = get_activities_list('Activities')
+    new_activities = {x.name for x in files_indir} - files_indb
+    
+    if new_activities:
+        update_db(db_name, username, password, 'Activities')
 
-        run_duration = running_intervals[running_intervals['type'] == 'run']['duration'].sum()
-        walk_duration = running_intervals[running_intervals['type'] == 'walk']['duration'].sum()
-        run_pct = round(run_duration / (run_duration + walk_duration) * 100, 1)
-        activity_stats = {'date': id.date(), 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
-                            'distance': round(data['distance'].values[-1] / 1000, 1), 
-                            'pace': round(data['pace'].mean(), 1),
-                            'avg hr': round(data['HR'].mean()),
-                            'run pct': run_pct}
-        summary.append(activity_stats)
-    summary = DataFrame.from_dict(summary)
+    act_ids = processed_activities(db_name, username, password)[-quantity:]
+
+    if len(act_ids) > 1:
+        act_ids = tuple(str(x) for x in act_ids)
+        _, intervals, summary = fetchmany(db_name, username, password, act_ids)
+    else:
+        act_ids = act_ids[0]
+        _, intervals, summary = fetchone(db_name, username, password, act_ids)
+
+    summary.loc[:, 'act_id'] = summary['act_id'].dt.strftime('%Y-%m-%d')
+    intervals.loc[:, 'act_id'] = intervals['act_id'].dt.strftime('%Y-%m-%d')
 
     counter = perf_counter() - counter
     print(f'preparing data took {counter:.3f} s')
@@ -283,11 +249,11 @@ def plot_box(files):
     # ax[1, 0].title.set_text('HR var rate, bpm')
     # ax[1, 1].title.set_text('Summary')
 
-    dist_plot = sns.boxplot(x='id', y='distance', data=activities, hue='type', 
+    dist_plot = sns.boxplot(x='act_id', y='distance', data=intervals, hue='type', 
                 showfliers=False, ax=ax[0, 0])
-    duration_plot = sns.boxplot(x='id', y='duration', data=activities, hue='type', 
+    duration_plot = sns.boxplot(x='act_id', y='duration', data=intervals, hue='type', 
                 showfliers=False, ax=ax[0, 1])
-    hr_plot = sns.violinplot(x='id', y='HRrate', data=activities, hue='type', 
+    hr_plot = sns.violinplot(x='act_id', y='hrrate', data=intervals, hue='type', 
                 showfliers=False, split=True, ax=ax[1, 0])
     for plot in [dist_plot, duration_plot, hr_plot]:
         plot.set_xlabel(None)
@@ -307,12 +273,49 @@ def plot_box(files):
 
     return
 
+
+def plot_density(quantity):
+    den_cnt = perf_counter()
+    db_name, username, password = Path('db_credentials.txt').read_text().splitlines()
+    
+    files_indb = set(processed_files(db_name, username, password))
+    files_indir = get_activities_list('Activities')
+    new_activities = {x.name for x in files_indir} - files_indb
+    
+    if new_activities:
+        update_db(db_name, username, password, 'Activities')
+
+    act_ids = processed_activities(db_name, username, password)[-quantity:]
+
+    # prepare canvas
+    plt.close('all')
+    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
+    ax[0].title.set_text('Distance, m')
+    ax[1].title.set_text('Duration, s')
+    
+    for act_id in act_ids:
+        _, running_intervals, _ = fetchone(db_name, username, password, act_id)
+
+        running_intervals['distance'].plot.density(label=act_id, ax=ax[0])  
+        running_intervals['duration'].plot.density(label=act_id, ax=ax[1])         
+
+    ax[0].legend()
+    ax[1].legend()
+    den_cnt = perf_counter() - den_cnt
+    print(f'running took {den_cnt} s')
+    plt.show()
+
+    return 
+
+
+
 #%%
-def main(files, mode='box'): 
+def main(quantity, mode='box'):
+
     if mode == 'kde':
-        plot_density(files)
+        plot_density(quantity)
     elif mode == 'box':
-        plot_box(files)
+        plot_box(quantity)
     else:
         raise ValueError('Unknown mode')
 
@@ -320,30 +323,13 @@ def main(files, mode='box'):
 
 
 if __name__ == "__main__":
-    # get .tcx files
-    files = get_activities_list('Activities')
-    
+   
     if len(sys.argv) > 1:
-        if sys.argv[1] == 'last2':
-            files = [files[-2], files[-1]]
-        elif sys.argv[1] == 'last3':
-            files = [files[-3], files[-2], files[-1]]
-        elif 'last-' in sys.argv[1]:
-            to_read = []
-            num = int(sys.argv[1].split('-')[1])
-            for i in range(num, 0, -1):
-                to_read.append(files[-i])
-            files = to_read
-        elif sys.argv[1] == 'first-last':
-            files = [files[0], files[-1]]
-        elif sys.argv[1] == 'all':
-            pass
+        quantity = int(sys.argv[1])
     else:
-        files = [files[-1]]
+        quantity = 1
 
     if len(sys.argv) == 3:
         mode = sys.argv[2]
-    else:
-        mode = 'box'
 
-    main(files, mode)
+    main(quantity, mode)
