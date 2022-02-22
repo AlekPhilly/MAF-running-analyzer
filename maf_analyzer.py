@@ -4,10 +4,12 @@ from pandas import DataFrame, Series, to_datetime
 import datetime as dt
 import matplotlib.pyplot as plt
 from pathlib import Path
-from numpy import nan
+from numpy import nan, inf
 import seaborn as sns
 from time import perf_counter
-
+from db_interaction import init_db, add_activity_id, add_data
+from db_interaction import truncate_db, drop_all, processed_files
+from db_interaction import fetchone, fetchmany, processed_activities
 
 def get_activities_list(folder_name):
     '''
@@ -36,7 +38,7 @@ def parse_garmin_tcx(filename):
     ns = {'ns0': '{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}',
     'ns3': '{http://www.garmin.com/xmlschemas/ActivityExtension/v2}'}
 
-    id = to_datetime(tree.find('.//' + ns['ns0'] + 'Id').text).date()
+    id = to_datetime(tree.find('.//' + ns['ns0'] + 'Id').text)
 
     trackpoints = tree.findall('.//' + ns['ns0'] + 'Trackpoint')
 
@@ -76,7 +78,7 @@ def clean_garmin_tcx_data(data):
     Args: data(pd.DataFrame) - data from parse_garmin_tcx() function
     Returns: data(pd.DataFrame)
     '''
-    #fill not recorded or missing data (previous not null value)
+    # fill not recorded or missing data (previous not null value)
     data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']] = data[['speed', 'cadence', 'latitude', 'longitude', 'altitude']].replace(0, method='ffill')
     data.fillna(method='ffill', inplace=True)
 
@@ -122,8 +124,8 @@ def extract_running_intervals(data):
         raise ValueError("Quanties of start and stop points aren't equal (walking)")
 
     # filter and save intervals data from dataset to separate dataframe
-    running_intervals = DataFrame(columns=['start time', 'stop time', 'start dist', 
-                                            'stop dist'])
+    running_intervals = DataFrame(columns=['start_time', 'stop_time', 'start_dist', 
+                                            'stop_dist'])
     
     for start, stop in zip(started_running, stopped_running):
         start_time = data.loc[start, 'time']
@@ -132,9 +134,9 @@ def extract_running_intervals(data):
         stop_dist = data.loc[stop, 'distance']
         dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
         
-        running_intervals = running_intervals.append(Series({'start time': start_time, 
-                                                    'stop time': stop_time,'start dist': start_dist, 
-                                                    'stop dist': stop_dist, 'dHR': dHR,
+        running_intervals = running_intervals.append(Series({'start_time': start_time, 
+                                                    'stop_time': stop_time,'start_dist': start_dist, 
+                                                    'stop_dist': stop_dist, 'dHR': dHR,
                                                     'type': 'run'}), ignore_index=True)
     
     for start, stop in zip(started_walking, stopped_walking):
@@ -144,14 +146,14 @@ def extract_running_intervals(data):
         stop_dist = data.loc[stop, 'distance']
         dHR = data.loc[stop, 'HR'] - data.loc[start, 'HR']
         
-        running_intervals = running_intervals.append(Series({'start time': start_time, 
-                                                    'stop time': stop_time,'start dist': start_dist, 
-                                                    'stop dist': stop_dist, 'dHR': dHR,
+        running_intervals = running_intervals.append(Series({'start_time': start_time, 
+                                                    'stop_time': stop_time,'start_dist': start_dist, 
+                                                    'stop_dist': stop_dist, 'dHR': dHR,
                                                     'type': 'walk'}), ignore_index=True)
     
     # calculate intervals duration and distance covered
-    running_intervals['duration'] = running_intervals['stop time'] - running_intervals['start time']
-    running_intervals['distance'] = running_intervals['stop dist'] - running_intervals['start dist']
+    running_intervals['duration'] = running_intervals['stop_time'] - running_intervals['start_time']
+    running_intervals['distance'] = running_intervals['stop_dist'] - running_intervals['start_dist']
 
     running_intervals['HRrate'] = abs(running_intervals['dHR'] / running_intervals['duration'] * 60)
 
@@ -163,65 +165,77 @@ def extract_running_intervals(data):
 
     return running_intervals
 
-def plot_density(files):
-   # prepare canvas
-    den_cnt = perf_counter()
-    plt.close('all')
-    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
-    ax[0].title.set_text('Distance, m')
-    ax[1].title.set_text('Duration, s')
 
-    for file in files:
+def update_db(db_name, username, password, activities_dir):
+    
+    activities = get_activities_list(activities_dir)
+    processed_activities = processed_files(db_name, username, password)
+
+    for activity in activities:
+
+        if activity.name in processed_activities:
+            print('Entry already exists')
+            continue
+        
         try:
-            #load data
-            counter = perf_counter()
-            id, data = parse_garmin_tcx(file)
-            counter = perf_counter() - counter
-            print(f'parsing took {counter} s')
-            counter = perf_counter()
+            id, data = parse_garmin_tcx(activity)
             data = clean_garmin_tcx_data(data)
-            counter = perf_counter() - counter
-            print(f'cleaning took {counter} s')
-            counter = perf_counter()
-            running_intervals = extract_running_intervals(data)
-            counter = perf_counter() - counter
-            print(f'extracting took {counter} s')
+            intervals = extract_running_intervals(data)
+        except:
+            continue
 
-            running_intervals['distance'].plot.density(label=id, ax=ax[0])  
-            running_intervals['duration'].plot.density(label=id, ax=ax[1])         
-       
-        except Exception as e:
-            print(str(file) + ' ' + str(e))
+        intervals['act_id'] = id
+        data['act_id'] = id
+        data.columns = [x.lower() for x in data.columns]
+        intervals.columns = [x.lower() for x in intervals.columns]
 
-    ax[0].legend()
-    ax[1].legend()
-    den_cnt = perf_counter() - den_cnt
-    print(f'running took {den_cnt} s')
-    plt.show()
-
-    return 
-
-def plot_box(files):
-    counter = perf_counter()
-    activities = DataFrame()
-    summary = []
-    for file in files:
-        id, data = parse_garmin_tcx(file)
-        data = clean_garmin_tcx_data(data)
-        running_intervals = extract_running_intervals(data)
-        running_intervals['id'] = id
-        activities = activities.append(running_intervals, ignore_index=True)
-
-        run_duration = running_intervals[running_intervals['type'] == 'run']['duration'].sum()
-        walk_duration = running_intervals[running_intervals['type'] == 'walk']['duration'].sum()
+        run_duration = intervals[intervals['type'] == 'run']['duration'].sum()
+        walk_duration = intervals[intervals['type'] == 'walk']['duration'].sum()
         run_pct = round(run_duration / (run_duration + walk_duration) * 100, 1)
-        activity_stats = {'date': id, 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
-                            'distance': round(data['distance'].values[-1] / 1000, 1), 
-                            'pace': round(data['pace'].mean(), 1),
-                            'avg hr': round(data['HR'].mean()),
-                            'run pct': run_pct}
-        summary.append(activity_stats)
-    summary = DataFrame.from_dict(summary)
+
+        activity_stats = {'act_id': id, 'duration': str(dt.timedelta(seconds=data['time'].values[-1])),
+                        'distance': round(data['distance'].values[-1] / 1000, 1), 
+                        'pace': round(data[data['pace'] != inf]['pace'].mean(), 1),
+                        'avg_hr': round(data['hr'].mean()),
+                        'run_pct': run_pct}
+        summary = DataFrame([activity_stats])
+
+        try:
+            add_activity_id(db_name, username, password, id, activity.name)
+        except:
+            print('Entry already exists')
+            continue
+
+        for table, dta in zip(('trackpoints', 'intervals', 'summary'), 
+                                (data, intervals, summary)):
+            add_data(db_name, username, password, table, dta)
+
+    return
+
+
+def plot_box(quantity):
+    counter = perf_counter()
+    
+    db_name, username, password = Path('db_credentials.txt').read_text().splitlines()
+    
+    files_indb = set(processed_files(db_name, username, password))
+    files_indir = get_activities_list('Activities')
+    new_activities = {x.name for x in files_indir} - files_indb
+    
+    if new_activities:
+        update_db(db_name, username, password, 'Activities')
+
+    act_ids = processed_activities(db_name, username, password)[-quantity:]
+
+    if len(act_ids) > 1:
+        act_ids = tuple(str(x) for x in act_ids)
+        _, intervals, summary = fetchmany(db_name, username, password, act_ids)
+    else:
+        act_ids = act_ids[0]
+        _, intervals, summary = fetchone(db_name, username, password, act_ids)
+
+    summary.loc[:, 'act_id'] = summary['act_id'].dt.strftime('%Y-%m-%d')
+    intervals.loc[:, 'act_id'] = intervals['act_id'].dt.strftime('%Y-%m-%d')
 
     counter = perf_counter() - counter
     print(f'preparing data took {counter:.3f} s')
@@ -235,11 +249,11 @@ def plot_box(files):
     # ax[1, 0].title.set_text('HR var rate, bpm')
     # ax[1, 1].title.set_text('Summary')
 
-    dist_plot = sns.boxplot(x='id', y='distance', data=activities, hue='type', 
+    dist_plot = sns.boxplot(x='act_id', y='distance', data=intervals, hue='type', 
                 showfliers=False, ax=ax[0, 0])
-    duration_plot = sns.boxplot(x='id', y='duration', data=activities, hue='type', 
+    duration_plot = sns.boxplot(x='act_id', y='duration', data=intervals, hue='type', 
                 showfliers=False, ax=ax[0, 1])
-    hr_plot = sns.violinplot(x='id', y='HRrate', data=activities, hue='type', 
+    hr_plot = sns.violinplot(x='act_id', y='hrrate', data=intervals, hue='type', 
                 showfliers=False, split=True, ax=ax[1, 0])
     for plot in [dist_plot, duration_plot, hr_plot]:
         plot.set_xlabel(None)
@@ -259,12 +273,49 @@ def plot_box(files):
 
     return
 
+
+def plot_density(quantity):
+    den_cnt = perf_counter()
+    db_name, username, password = Path('db_credentials.txt').read_text().splitlines()
+    
+    files_indb = set(processed_files(db_name, username, password))
+    files_indir = get_activities_list('Activities')
+    new_activities = {x.name for x in files_indir} - files_indb
+    
+    if new_activities:
+        update_db(db_name, username, password, 'Activities')
+
+    act_ids = processed_activities(db_name, username, password)[-quantity:]
+
+    # prepare canvas
+    plt.close('all')
+    fig, ax  = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
+    ax[0].title.set_text('Distance, m')
+    ax[1].title.set_text('Duration, s')
+    
+    for act_id in act_ids:
+        _, running_intervals, _ = fetchone(db_name, username, password, act_id)
+
+        running_intervals['distance'].plot.density(label=act_id, ax=ax[0])  
+        running_intervals['duration'].plot.density(label=act_id, ax=ax[1])         
+
+    ax[0].legend()
+    ax[1].legend()
+    den_cnt = perf_counter() - den_cnt
+    print(f'running took {den_cnt} s')
+    plt.show()
+
+    return 
+
+
+
 #%%
-def main(files, mode='box'): 
+def main(quantity, mode='box'):
+
     if mode == 'kde':
-        plot_density(files)
+        plot_density(quantity)
     elif mode == 'box':
-        plot_box(files)
+        plot_box(quantity)
     else:
         raise ValueError('Unknown mode')
 
@@ -272,30 +323,13 @@ def main(files, mode='box'):
 
 
 if __name__ == "__main__":
-    # get .tcx files
-    files = get_activities_list('Activities')
-    
+   
     if len(sys.argv) > 1:
-        if sys.argv[1] == 'last2':
-            files = [files[-2], files[-1]]
-        elif sys.argv[1] == 'last3':
-            files = [files[-3], files[-2], files[-1]]
-        elif 'last-' in sys.argv[1]:
-            to_read = []
-            num = int(sys.argv[1].split('-')[1])
-            for i in range(num, 0, -1):
-                to_read.append(files[-i])
-            files = to_read
-        elif sys.argv[1] == 'first-last':
-            files = [files[0], files[-1]]
-        elif sys.argv[1] == 'all':
-            pass
+        quantity = int(sys.argv[1])
     else:
-        files = [files[-1]]
+        quantity = 1
 
     if len(sys.argv) == 3:
         mode = sys.argv[2]
-    else:
-        mode = 'box'
 
-    main(files, mode)
+    main(quantity, mode)
