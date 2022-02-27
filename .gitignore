@@ -138,9 +138,11 @@ Activities/
 *.ipynb
 tcx-parser.py
 parser_tests.py
+logging_pg.py
 
 # database password
 db_credentials.txt
+garmin_credentials.txt
 
 # vscode
 *.json

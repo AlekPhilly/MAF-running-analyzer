@@ -122,8 +122,9 @@ class GarminDB:
             with con.cursor() as cur:
                 cur.execute(query1)
 
-
+    @timer
     def update_db(self, activities_dir):
+        '''update db from directory with tcx files'''
         
         activities = get_activities_list(activities_dir)
         processed_activities = self.processed_files
@@ -167,6 +168,19 @@ class GarminDB:
                                     (data, intervals, summary)):
                 self.add_data(table, dta)
     
+
+    @timer
+    def actualize_db(self, activities_dir):
+        '''update db from directory with tcx files if any 
+            file isn't yet in db'''
+
+        files_indb = set(self.processed_files)
+        files_indir = get_activities_list(activities_dir)
+        new_activities = {x.name for x in files_indir} - files_indb
+        
+        if new_activities:
+            self.update_db(activities_dir)    
+
 
     # Methods for working with activities
     def fetchone(self, act_id: str):

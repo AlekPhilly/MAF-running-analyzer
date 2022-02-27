@@ -1,12 +1,14 @@
 import sys
 import datetime as dt
+import time
 import matplotlib.pyplot as plt
 from pathlib import Path
 from numpy import nan, inf
 import seaborn as sns
 from time import perf_counter
 from modules.classes import GarminDB
-from modules.utilities import get_activities_list, timer
+from modules.utilities import timer
+from modules.scraping import download_new_tcx
 import logging
 
 
@@ -14,19 +16,9 @@ logging.basicConfig(format='%(levelname)s | %(asctime)s | %(message)s',
                     datefmt='%y-%m-%d %H:%M:%S', level=logging.INFO)
 
 ACTIVITIES_DIR = 'Activities'
-DB_NAME, USERNAME, PASSWORD = Path('db_credentials.txt').read_text().splitlines()
-
-
-@timer
-def actualize_database(database: GarminDB):
-    global ACTIVITIES_DIR
-
-    files_indb = set(database.processed_files)
-    files_indir = get_activities_list(ACTIVITIES_DIR)
-    new_activities = {x.name for x in files_indir} - files_indb
-    
-    if new_activities:
-        database.update_db(ACTIVITIES_DIR)
+DB_NAME, DB_USERNAME, DB_PASSWORD = Path('db_credentials.txt').read_text().splitlines()
+GR_LOGIN, GR_PASSWORD = Path('garmin_credentials.txt').read_text().splitlines()
+START_DATE = dt.date.today() - dt.timedelta(days=14) #'2021-08-17'
 
 
 def plot_box(database, quantity):
@@ -111,12 +103,18 @@ def plot_density(database, quantity):
 
 
 #%%
-def main(quantity, mode='box'):
-    global DB_NAME, USERNAME, PASSWORD
-    database = GarminDB(DB_NAME, USERNAME, PASSWORD)
+def main(quantity, mode='box', update=False):
+    global DB_NAME, DB_USERNAME, DB_PASSWORD
+    global START_DATE, GR_LOGIN, GR_PASSWORD
+    global ACTIVITIES_DIR
+
+    if update == True:
+        download_new_tcx(GR_LOGIN, GR_PASSWORD, START_DATE, ACTIVITIES_DIR)
+  
+    database = GarminDB(DB_NAME, DB_USERNAME, DB_PASSWORD)
     database.connect()
     
-    actualize_database(database)
+    database.actualize_db(ACTIVITIES_DIR)
 
     if mode == 'kde':
         plot_density(database, quantity)
@@ -133,12 +131,15 @@ def main(quantity, mode='box'):
 
 if __name__ == "__main__":
    
+    quantity = 1
+    mode = 'box'
+    update = False
+
     if len(sys.argv) > 1:
         quantity = int(sys.argv[1])
-    else:
-        quantity = 1
-
-    if len(sys.argv) == 3:
-        mode = sys.argv[2]
-
-    main(quantity, mode)
+        if sys.argv[2] in ('kde', 'box'):
+            mode = sys.argv[2]
+        if 'update' in sys.argv:
+            update = True
+    
+    main(quantity, mode, update)
